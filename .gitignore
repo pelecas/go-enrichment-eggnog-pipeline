@@ -1,5 +1,3 @@
-*.csv
 *.tsv
 *.png
-*.txt
 __pycache__/
