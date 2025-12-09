@@ -4,3 +4,4 @@ goatools
 matplotlib
 scikit-learn
 streamlit
+chardet
