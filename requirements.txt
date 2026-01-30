@@ -1,7 +1,8 @@
-pandas
-numpy
-goatools
-matplotlib
-scikit-learn
-streamlit
-chardet
+pandas==3.0.0
+numpy==2.4.1
+goatools==1.5.2
+matplotlib==3.10.8
+scikit-learn==1.8.0
+streamlit==1.19.0
+altair==4.2.2
+chardet==5.2.0
