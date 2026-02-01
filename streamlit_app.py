@@ -65,7 +65,26 @@ go_obo_file = st.file_uploader("Upload GO OBO File (.obo)", type=["obo"])
 if go_obo_file is None:
     st.stop()
 
-namespace_to_run = st.selectbox("GO Namespace", ["BP", "MF", "CC"])
+# ===============================
+# GO category selection (RADIO)
+# ===============================
+st.subheader("Select GO category and significance threshold")
+
+go_choice = st.radio(
+    "GO category",
+    options=[
+        "Biological Process (BP)",
+        "Molecular Function (MF)",
+        "Cellular Component (CC)"
+    ]
+)
+
+namespace_to_run = {
+    "Biological Process (BP)": "BP",
+    "Molecular Function (MF)": "MF",
+    "Cellular Component (CC)": "CC"
+}[go_choice]
+
 alpha = st.slider("FDR threshold", 0.01, 0.1, 0.05, 0.01)
 
 # ===============================
@@ -90,7 +109,6 @@ try:
     study_genes = list(study_genes & set(go_df["gene_id"]))
     st.write(f"Study genes after filtering: {len(study_genes)}")
 
-    # ---- Save OBO file to disk (required by GOATOOLS)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".obo") as tmp:
         tmp.write(go_obo_file.getvalue())
         obo_path = tmp.name
@@ -116,7 +134,7 @@ try:
     gene2go = (
         filtered_go_df
         .groupby("gene_id")["go_id"]
-        .apply(set)   # MUST be set
+        .apply(set)
         .to_dict()
     )
 
@@ -205,10 +223,10 @@ def create_bubble_plot(df, namespace):
     cbar = plt.colorbar(sc, ax=ax, shrink=0.45, pad=0.04, aspect=20)
     cbar.set_label(r"-log$_{10}$ FDR")
 
-    # Dot size legend
     sizes = [5, 10, 20, 40]
     handles = [
-        plt.scatter([], [], s=s * 15, color="gray", edgecolors="black", alpha=0.6)
+        plt.scatter([], [], s=s * 15, color="gray",
+                    edgecolors="black", alpha=0.6)
         for s in sizes
     ]
 
@@ -224,7 +242,6 @@ def create_bubble_plot(df, namespace):
     plt.tight_layout()
     st.pyplot(fig)
 
-    # Save SVG
     with tempfile.NamedTemporaryFile(delete=False, suffix=".svg") as tmp:
         fig.savefig(tmp.name, format="svg")
         with open(tmp.name, "rb") as f:
