@@ -27,8 +27,9 @@ Upload:
 - Study gene list (CSV)
 - GO OBO file
 
-The app performs GO enrichment analysis and generates a
-publication-quality dot plot with SVG export.
+The app performs GO enrichment analysis, optional semantic
+reduction, and generates a publication-quality dot plot
+with SVG export.
 """)
 
 # ===============================
@@ -66,13 +67,13 @@ if go_obo_file is None:
     st.stop()
 
 # ===============================
-# GO category selection (RADIO)
+# GO category selection
 # ===============================
 st.subheader("Select GO category and significance threshold")
 
 go_choice = st.radio(
     "GO category",
-    options=[
+    [
         "Biological Process (BP)",
         "Molecular Function (MF)",
         "Cellular Component (CC)"
@@ -86,6 +87,11 @@ namespace_to_run = {
 }[go_choice]
 
 alpha = st.slider("FDR threshold", 0.01, 0.1, 0.05, 0.01)
+
+apply_reduction = st.checkbox(
+    "Apply semantic reduction (Resnik similarity clustering)",
+    value=True
+)
 
 # ===============================
 # Data processing
@@ -126,7 +132,6 @@ try:
                     (n == "cellular_component" and ns == "CC")
                 )
             return False
-
         return go_df[go_df["go_id"].map(match)]
 
     filtered_go_df = split_namespace(go_df, obodag, namespace_to_run)
@@ -141,12 +146,6 @@ try:
     background_genes = list(gene2go.keys())
     study_ns_genes = [g for g in study_genes if g in background_genes]
 
-    st.write(
-        f"{namespace_to_run}: "
-        f"Background = {len(background_genes)}, "
-        f"Study = {len(study_ns_genes)}"
-    )
-
 except Exception as e:
     st.error(f"Processing error: {e}")
     st.stop()
@@ -154,47 +153,86 @@ except Exception as e:
 # ===============================
 # Enrichment analysis
 # ===============================
-try:
-    goea = GOEnrichmentStudy(
-        background_genes,
-        gene2go,
-        obodag,
-        alpha=alpha,
-        methods=["fdr_bh"],
-        propagate_counts=True
-    )
+goea = GOEnrichmentStudy(
+    background_genes,
+    gene2go,
+    obodag,
+    alpha=alpha,
+    methods=["fdr_bh"],
+    propagate_counts=True
+)
 
-    results = goea.run_study(study_ns_genes)
+results = goea.run_study(study_ns_genes)
 
-    df_out = pd.DataFrame([
-        {
-            "GO_ID": r.GO,
-            "Name": r.name,
-            "Namespace": r.NS,
-            "p_fdr_bh": r.p_fdr_bh,
-            "Genes": ";".join(r.study_items)
-        }
-        for r in results if r.p_fdr_bh is not None
-    ])
+df_out = pd.DataFrame([
+    {
+        "GO_ID": r.GO,
+        "Name": r.name,
+        "Namespace": r.NS,
+        "p_fdr_bh": r.p_fdr_bh,
+        "Genes": ";".join(r.study_items)
+    }
+    for r in results if r.p_fdr_bh is not None
+])
 
-    df_out["study_count"] = df_out["Genes"].str.count(";") + 1
-    df_out = df_out.sort_values("p_fdr_bh")
-
-    st.subheader("Enrichment Results")
-    st.dataframe(df_out.head(20))
-
-    st.download_button(
-        "Download enrichment table (CSV)",
-        df_out.to_csv(index=False),
-        "go_enrichment_results.csv"
-    )
-
-except Exception as e:
-    st.error(f"Enrichment error: {e}")
-    st.stop()
+df_out["study_count"] = df_out["Genes"].str.count(";") + 1
+df_out = df_out.sort_values("p_fdr_bh")
 
 # ===============================
-# Dot plot with legends + SVG
+# Semantic reduction
+# ===============================
+def semantic_reduction(df, obodag, gene2go, pval_col="p_fdr_bh", cutoff=0.05):
+    from goatools.semantic import TermCounts, resnik_sim
+    from sklearn.cluster import AgglomerativeClustering
+
+    sig = df[df[pval_col] < cutoff]["GO_ID"].tolist()
+    sig = [go for go in sig if go in obodag]
+    if len(sig) <= 1:
+        return df
+
+    termcounts = TermCounts(obodag, gene2go)
+    n = len(sig)
+    dist = np.ones((n, n)) * 10
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if obodag[sig[i]].namespace == obodag[sig[j]].namespace:
+                sim = resnik_sim(sig[i], sig[j], obodag, termcounts) or 0
+                dist[i, j] = dist[j, i] = 10 - sim
+
+    clustering = AgglomerativeClustering(
+        metric="precomputed",
+        linkage="average",
+        distance_threshold=6.0,
+        n_clusters=None
+    )
+    labels = clustering.fit_predict(dist)
+
+    reps = []
+    for cid in np.unique(labels):
+        members = [sig[i] for i in range(n) if labels[i] == cid]
+        best = df[df["GO_ID"].isin(members)].iloc[0]["GO_ID"]
+        reps.append(best)
+
+    return df[df["GO_ID"].isin(reps)]
+
+if apply_reduction:
+    df_plot = semantic_reduction(df_out, obodag, gene2go)
+    st.subheader("Reduced Enrichment Results")
+else:
+    df_plot = df_out
+    st.subheader("Enrichment Results")
+
+st.dataframe(df_plot.head(20))
+
+st.download_button(
+    "Download enrichment table (CSV)",
+    df_plot.to_csv(index=False),
+    "go_enrichment_results_reduced.csv" if apply_reduction else "go_enrichment_results.csv"
+)
+
+# ===============================
+# Dot plot
 # ===============================
 def create_bubble_plot(df, namespace):
     df = df[df["p_fdr_bh"] > 0].copy()
@@ -205,8 +243,7 @@ def create_bubble_plot(df, namespace):
     fig, ax = plt.subplots(figsize=(10, len(df) * 0.5))
 
     sc = ax.scatter(
-        df["-log10_fdr"],
-        y,
+        df["-log10_fdr"], y,
         s=df["study_count"] * 15,
         c=df["-log10_fdr"],
         cmap="viridis",
@@ -217,29 +254,18 @@ def create_bubble_plot(df, namespace):
     ax.set_yticks(y)
     ax.set_yticklabels(df["Name"], fontsize=10)
     ax.set_xlabel(r"-log$_{10}$(FDR)")
-    ax.set_title(f"Top 20 {namespace} GO Terms")
+    ax.set_title(f"Top {len(df)} {namespace} GO Terms")
     ax.invert_yaxis()
 
-    cbar = plt.colorbar(sc, ax=ax, shrink=0.45, pad=0.04, aspect=20)
+    cbar = plt.colorbar(sc, ax=ax, shrink=0.45, pad=0.04)
     cbar.set_label(r"-log$_{10}$ FDR")
 
     sizes = [5, 10, 20, 40]
-    handles = [
-        plt.scatter([], [], s=s * 15, color="gray",
-                    edgecolors="black", alpha=0.6)
-        for s in sizes
-    ]
+    handles = [plt.scatter([], [], s=s * 15, color="gray") for s in sizes]
+    ax.legend(handles, [f"{s} genes" for s in sizes],
+              title="Gene count", bbox_to_anchor=(1.02, 1.0),
+              loc="center left", frameon=False)
 
-    ax.legend(
-        handles,
-        [f"{s} genes" for s in sizes],
-        title="Gene count",
-        loc="center left",
-        bbox_to_anchor=(1.02, 1.0),
-        frameon=False
-    )
-
-    plt.tight_layout()
     st.pyplot(fig)
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".svg") as tmp:
@@ -253,8 +279,8 @@ def create_bubble_plot(df, namespace):
             )
         os.remove(tmp.name)
 
-if not df_out.empty:
-    create_bubble_plot(df_out, namespace_to_run)
+if not df_plot.empty:
+    create_bubble_plot(df_plot, namespace_to_run)
 
 # ===============================
 # Cleanup
